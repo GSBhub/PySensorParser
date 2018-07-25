@@ -1,7 +1,7 @@
 import sys
 import json
+import jsongraph
 from pprint import pprint
-
 
 def main ():
     fn = sys.argv[1] # really lazy arg parser for now, should add more options
