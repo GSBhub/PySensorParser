@@ -9,7 +9,7 @@
             "type": "python",
             "request": "launch",
             "program": "${file}",
-            "args": ["~/Documents/Graphs/Files/EG33/9a10.json"]
+            "args": ["/home/greg/Documents/Graphs/Files/EG33/742521-1994-USDM-SVX-EG33.bin"]
         },
         {
             "name": "Python: Attach",
