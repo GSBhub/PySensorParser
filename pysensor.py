@@ -5,6 +5,37 @@ import jsongraph
 import pprint
 import r2pipe
 
+class callee:
+    base_addr = 0x0 # address of the callee
+    dest_addr = 0x0 # where the callee points
+    json = ""      # json representation of function pointed to
+    dot = ""       # dot representation of function pointed to
+
+    def __init__(self, base_addr, dest_addr):
+        self.base_addr = base_addr
+        self.dest_addr = dest_addr
+
+    def set_json(self, json):
+        self.json = json
+
+    def set_dot(self, dot):
+        self.dot = dot
+
+class caller:
+    count = 0
+    base_addr = 0x0 # addr of caller function
+    callees = {}   # addr, callee pair dictionary 
+    json = ""      # json representation of this caller function
+    dot = ""       # dot represenation of this caller function
+
+    def __init__(self, base_addr):
+        self.base_addr = base_addr
+
+    def push(self, base_addr, callee):
+        self.count += 1
+        self.callees[base_addr] = callee
+
+
 # parse func information from JSON file
 # either compare to a function and return information about the tree, or
 def parse_json(json_tree, comp):
@@ -46,34 +77,61 @@ def get_rom_candidates(infile):
         print("R2 loaded arch: " + r2.cmd('e asm.arch'))
         print(r2.cmd('aa'))                # analyze all
         candidates = r2.cmd('/A call') # Use the /A call command in R2 to specify all R2 callees 
-        r2.quit()
         
-        candidates = check_candidates(candidates)
+        callers = get_callers(candidates)
 
     # TODO: the rest of this
-    # Grab the function name of each of those calls
-
-    # Create the Caller dictionary with each main function of callees, made up of caller objects
-
-    # Each caller object has the addresses of what they call
 
     # For each caller, the address is paired with the JSON of the corresponding function
 
     # After the JSON is fully parsed, the data structure is returned to the PARSE_ROM func
-
+        r2.quit()
+    
     else: 
         print("Error parsing R2")
+        r2.quit()
 
     print("Not implemented yet!")
     return 0
 
+def isHex(num): # helper function to check if a string is a hex string or not
+    try:
+        int (num, 16)
+        return True
+    except ValueError:
+        return False
+
 # Purge all addresses that aren't within 5 lines of at least 1 other call, and number less than 5 total
-def check_candidates(candidates):
-    #print(json.dumps(candidates))
-    cand_list = candidates.splitlines()
-    for candidate in cand_list:
-        print ("Candidate: " + candidate)
-    return candidates
+def get_callers(candidates):
+    cand_str = candidates.splitlines()
+    cand_list = {} # dictionary of address, and the candidate object
+
+    # place all candidates into the above dictionary
+    for candidate in cand_str:
+        candidate = candidate.split()
+        if isHex(candidate[3]):
+            callee_candidate = callee(int(candidate[0], 16), int(candidate[3], 16))
+            cand_list[callee_candidate.base_addr] = callee_candidate
+
+    # form groupings based off of "close" call groupings
+    current = None
+    func = None
+    callers = {}
+    for address, candidate in sorted(cand_list.iteritems(), key=lambda (k,v): (v,k)): 
+        if (func == None):                # no defined caller, make a new one starting at first address
+            func = current = address     # current starts at the base address, though functions may start earlier
+            call = caller(address)
+
+        elif (abs(address - current) <= 0x5): # a candidate is "close" to another if it is within 10 of the next address
+            call.push(address, candidate)    # push a candidate into the caller
+            current = address
+
+        else:
+            if (call.count > 3):             # if there are less than 5 candiates in the caller, discard
+                callers[func] = call      # save the caller object, otherwise overwrite it
+            func = current = None                   # clear current, start search for next candidate
+
+    return callers
 
 def main ():
     # set up the parser first
