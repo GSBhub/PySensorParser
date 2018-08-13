@@ -1,2 +1,5 @@
 Pysensor.code-workspace
 .vscode/launch.json
+*.json
+*.dot
+log_filename.txt

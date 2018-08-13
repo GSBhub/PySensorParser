@@ -4,8 +4,9 @@ import json
 import jsongraph
 import pprint
 import r2pipe
-import datetime
+from datetime import datetime
 import os
+import logging
 
 class callee:
     base_addr = 0x0 # address of the callee
@@ -72,22 +73,32 @@ def parse_rom(infile):
         print(r2.cmd('aa'))                # analyze all
         candidates = r2.cmd('/A call') # Use the /A call command in R2 to specify all R2 callees 
         
-        callers = get_callers(candidates)
+        logging.info(candidates)
 
+        callers = get_callers(candidates)
         cwd = os.getcwd()
+
+        logging.info(cwd)
+
+        current_date = datetime.now()
 
         for func, func_caller in callers.items():
             try:
                 func_str = '{:02x}'.format(func)
             except ValueError:
                 func_str = '{}'.format(func)
-            r2.cmd(func_str)    # seek to the address of this func
+    
+            logging.info("Seeking to address 0x{} in radare.".format(func_str))
+            logging.debug(r2.cmd(func_str))   # seek to the address of this func
+            logging.info("Creating main function JSON, Disassembly")
+
             func_caller.json = r2.cmd('pdj') # pull JSON disassembly from R2
             func_caller.dot = r2.cmd('agd')  # pull dot for function from R2
         
-            new_path = '{}-{}'.format(func_str, datetime.date)
+            new_path = '{}-{}'.format(func_str, current_date.strftime("%B-%d-%Y"))
             if not os.path.exists(new_path):
                 os.makedirs(new_path)
+                
             os.chdir(new_path)
             f1 = open ("{}.json".format(func_str), "w")
             f2 = open("{}.dot".format(func_str), "w")
@@ -101,11 +112,13 @@ def parse_rom(infile):
                     addr_str = '0x{:04x}'.format(addr)
                 except ValueError:
                     addr_str = '{}'.format(addr)
-                r2.cmd(addr_str)        # now do the same for everything else within the caller struct
+                logging.debug(r2.cmd(addr_str))        # now do the same for everything else within the caller struct
+                logging.info("Creating main function JSON, Disassembly")
+
                 callee.json = r2.cmd('pdj')
                 callee.dot = r2.cmd('agd') 
 
-                sub_path = '{}-{}'.format(addr_str, datetime.date)
+                sub_path = '{}-{}'.format(addr_str, current_date.strftime("%B-%d-%Y"))
                 if not os.path.exists(sub_path):
                     os.makedirs(sub_path)              
 
@@ -116,8 +129,7 @@ def parse_rom(infile):
                 f2.write(callee.dot)
                 f1.close()
                 f2.close()
-                os.chdir(new_path)
-
+                os.chdir("..")
         os.chdir(cwd)
     # For each caller, the address is paired with the JSON of the corresponding function
     # After the JSON is fully parsed, the data structure is returned to the PARSE_ROM func
@@ -141,20 +153,25 @@ def isHex(num):
 def get_callers(candidates):
 
     cand_str = candidates.splitlines()
-    cand_list = {int : int} # dictionary of address, and the candidate object
+    cand_list = {} # dictionary of address, and the candidate object
 
     # place all candidates into the above dictionary
     for candidate in cand_str:
+        logging.debug("Candidate: {}".format(candidate))
         candidate = candidate.split()
-        if isHex(candidate[3]):
+        if isHex(candidate[3]): # Don't add any non-hex function calls, for the broken instructions
             callee_candidate = callee(int(candidate[0], 16), int(candidate[3], 16))
             cand_list[callee_candidate.base_addr] = callee_candidate
 
+    logging.info("Found {} potential candidates for grouping.".format(len(candidate)))
+
     # form groupings based off of "close" call groupings
-    func = None
-    callers = {int : caller}
+    func = current = None
+    callers = {}
 
     for address, candidate in sorted(cand_list.iteritems(), key=lambda (k,v): (v,k)): # iterate over items in-order (by address)
+
+        logging.debug("Candidate func address: {}\nCurrent address: {}".format(address, current))
 
         if (func == None):                # no defined caller, make a new one starting at first address
             func = current = address     # current starts at the base address, though functions may start earlier
@@ -169,6 +186,8 @@ def get_callers(candidates):
                 callers[func] = call      # save the caller object, otherwise overwrite it
             func = current = None                   # clear current, start search for next candidate
 
+    logging.info("Found {} groups of candidates.".format(len(callers)))
+
     return callers
 
 def main ():
@@ -182,6 +201,8 @@ def main ():
 
     parser.add_argument('-j','--json', action="store_true", #flag and filename
                    help='Compare JSON method with another JSON tree, find similarities')
+
+    logging.basicConfig(filename='log_filename.txt', level=logging.DEBUG)
 
   #  parser.add_argument('-d','--dot', metavar='dotfile', type=argparse.FileType('w'), default=sys.stdout,  #flag and filename
   #                 help='Convert to a graphviz dot flie')
