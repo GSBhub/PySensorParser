@@ -4,6 +4,8 @@ import json
 import jsongraph
 import pprint
 import r2pipe
+import datetime
+import os
 
 class callee:
     base_addr = 0x0 # address of the callee
@@ -57,16 +59,8 @@ def parse_json(json_tree, comp):
 # - parsing the callees of those functions, that is, the functions called by the caller
 # - creating a JSON graph structure of those functions
 # - returning that graph to be parsed by other functions
+
 def parse_rom(infile):
-    # TODO: include R_PIPE API, call R2 and get the JSON from the ROM
-    print("Not implemented yet!")
-    ret = infile
-
-    # first, call R2 and find candidates from the ROM
-    get_rom_candidates(infile)
-    return ret
-
-def get_rom_candidates(infile):
     print("Loading into R2...")
 
     # load infile into R2
@@ -80,10 +74,52 @@ def get_rom_candidates(infile):
         
         callers = get_callers(candidates)
 
-    # TODO: the rest of this
+        cwd = os.getcwd()
 
+        for func, func_caller in callers.items():
+            try:
+                func_str = '{:02x}'.format(func)
+            except ValueError:
+                func_str = '{}'.format(func)
+            r2.cmd(func_str)    # seek to the address of this func
+            func_caller.json = r2.cmd('pdj') # pull JSON disassembly from R2
+            func_caller.dot = r2.cmd('agd')  # pull dot for function from R2
+        
+            new_path = '{}-{}'.format(func_str, datetime.date)
+            if not os.path.exists(new_path):
+                os.makedirs(new_path)
+            os.chdir(new_path)
+            f1 = open ("{}.json".format(func_str), "w")
+            f2 = open("{}.dot".format(func_str), "w")
+            f1.write(func_caller.json)
+            f2.write(func_caller.dot)
+            f1.close()
+            f2.close()
+
+            for addr, callee in func_caller.callees.items():
+                try: 
+                    addr_str = '0x{:04x}'.format(addr)
+                except ValueError:
+                    addr_str = '{}'.format(addr)
+                r2.cmd(addr_str)        # now do the same for everything else within the caller struct
+                callee.json = r2.cmd('pdj')
+                callee.dot = r2.cmd('agd') 
+
+                sub_path = '{}-{}'.format(addr_str, datetime.date)
+                if not os.path.exists(sub_path):
+                    os.makedirs(sub_path)              
+
+                os.chdir(sub_path)
+                f1 = open ("{}.json".format(addr_str), "w")
+                f2 = open("{}.dot".format(addr_str), "w")
+                f1.write(callee.json)
+                f2.write(callee.dot)
+                f1.close()
+                f2.close()
+                os.chdir(new_path)
+
+        os.chdir(cwd)
     # For each caller, the address is paired with the JSON of the corresponding function
-
     # After the JSON is fully parsed, the data structure is returned to the PARSE_ROM func
         r2.quit()
     
@@ -91,10 +127,10 @@ def get_rom_candidates(infile):
         print("Error parsing R2")
         r2.quit()
 
-    print("Not implemented yet!")
-    return 0
+    return callers
 
-def isHex(num): # helper function to check if a string is a hex string or not
+# helper function to check if a string is a hex string or not
+def isHex(num): 
     try:
         int (num, 16)
         return True
@@ -103,8 +139,9 @@ def isHex(num): # helper function to check if a string is a hex string or not
 
 # Purge all addresses that aren't within 5 lines of at least 1 other call, and number less than 5 total
 def get_callers(candidates):
+
     cand_str = candidates.splitlines()
-    cand_list = {} # dictionary of address, and the candidate object
+    cand_list = {int : int} # dictionary of address, and the candidate object
 
     # place all candidates into the above dictionary
     for candidate in cand_str:
@@ -114,10 +151,11 @@ def get_callers(candidates):
             cand_list[callee_candidate.base_addr] = callee_candidate
 
     # form groupings based off of "close" call groupings
-    current = None
     func = None
-    callers = {}
-    for address, candidate in sorted(cand_list.iteritems(), key=lambda (k,v): (v,k)): 
+    callers = {int : caller}
+
+    for address, candidate in sorted(cand_list.iteritems(), key=lambda (k,v): (v,k)): # iterate over items in-order (by address)
+
         if (func == None):                # no defined caller, make a new one starting at first address
             func = current = address     # current starts at the base address, though functions may start earlier
             call = caller(address)
