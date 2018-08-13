@@ -7,6 +7,7 @@ import r2pipe
 from datetime import datetime
 import os
 import logging
+import re
 
 class callee:
     base_addr = 0x0 # address of the callee
@@ -38,7 +39,6 @@ class caller:
         self.count += 1
         self.callees[base_addr] = callee
 
-
 # parse func information from JSON file
 # either compare to a function and return information about the tree, or
 def parse_json(json_tree, comp):
@@ -60,7 +60,6 @@ def parse_json(json_tree, comp):
 # - parsing the callees of those functions, that is, the functions called by the caller
 # - creating a JSON graph structure of those functions
 # - returning that graph to be parsed by other functions
-
 def parse_rom(infile):
     print("Loading into R2...")
 
@@ -91,15 +90,16 @@ def parse_rom(infile):
             logging.info("Seeking to address 0x{} in radare.".format(func_str))
             logging.debug(r2.cmd(func_str))   # seek to the address of this func
             logging.info("Creating main function JSON, Disassembly")
-
+            r2.cmd('aaa')
             func_caller.json = r2.cmd('pdj') # pull JSON disassembly from R2
             func_caller.dot = r2.cmd('agd')  # pull dot for function from R2
         
             new_path = '{}-{}'.format(func_str, current_date.strftime("%B-%d-%Y"))
             if not os.path.exists(new_path):
                 os.makedirs(new_path)
-                
-            os.chdir(new_path)
+            if not os.curdir == new_path:
+                os.chdir(new_path)
+
             f1 = open ("{}.json".format(func_str), "w")
             f2 = open("{}.dot".format(func_str), "w")
             f1.write(func_caller.json)
@@ -115,6 +115,7 @@ def parse_rom(infile):
                 logging.debug(r2.cmd(addr_str))        # now do the same for everything else within the caller struct
                 logging.info("Creating main function JSON, Disassembly")
 
+                r2.cmd('aaa')
                 callee.json = r2.cmd('pdj')
                 callee.dot = r2.cmd('agd') 
 
@@ -130,6 +131,7 @@ def parse_rom(infile):
                 f1.close()
                 f2.close()
                 os.chdir("..")
+            os.chdir("..")
         os.chdir(cwd)
     # For each caller, the address is paired with the JSON of the corresponding function
     # After the JSON is fully parsed, the data structure is returned to the PARSE_ROM func
@@ -204,6 +206,8 @@ def main ():
 
     logging.basicConfig(filename='log_filename.txt', level=logging.DEBUG)
 
+
+
   #  parser.add_argument('-d','--dot', metavar='dotfile', type=argparse.FileType('w'), default=sys.stdout,  #flag and filename
   #                 help='Convert to a graphviz dot flie')
 
@@ -221,12 +225,33 @@ def main ():
 
     else:            # do ROM-level analysis with R2pipe
         #ret = parse_json(parse_rom(infile), None)
+
+        regex = re.compile(r'[\d\w]+$')
+        dir_title =  regex.search(infile)
+        working_dir = '{}'.format(dir_title.group(0))
+
+        if not os.path.exists(working_dir):
+            os.makedirs(working_dir)
+        if not os.curdir == working_dir:
+            os.chdir(working_dir)
+        current_date = datetime.now()
+        
+        regex = re.compile(r'\d\w+-\d\w+')
+        dir_title =  regex.search(infile)
+        working_dir = '{}-{}'.format(dir_title, current_date.strftime("%B-%d-%Y"))
+
+        if not os.path.exists(working_dir):
+            os.makedirs(working_dir)
+        if not os.curdir == working_dir:
+            os.chdir(working_dir)
+
         ret = parse_rom(infile)
-    print(ret)    
+
+#    print(ret)    
 #    if dot_file:
 #        #TODO: convert JSON to DOT, output
 #        dot_file.write((json.dumps(ret))) # dump graph, TODO: parse graph
 #        dot_file.close()
 
-# call main, start everything up
+# start
 main()
