@@ -14,6 +14,7 @@ class callee:
     dest_addr = 0x0 # where the callee points
     json = ""      # json representation of function pointed to
     dot = ""       # dot representation of function pointed to
+#    count = ""     # number of instructions in this callee
 
     def __init__(self, base_addr, dest_addr):
         self.base_addr = base_addr
@@ -68,8 +69,8 @@ def parse_rom(infile):
 
     if r2:                             # assert the R2 file opened correctly
         r2.cmd('e asm.arch=m7700')     # set the architecture env variable
-        print("R2 loaded arch: " + r2.cmd('e asm.arch'))
-        print(r2.cmd('aa'))                # analyze all
+        logging.info("R2 loaded arch: " + r2.cmd('e asm.arch'))
+        logging.info(r2.cmd('aa'))                # analyze all
         candidates = r2.cmd('/A call') # Use the /A call command in R2 to specify all R2 callees 
         
         logging.info(candidates)
@@ -79,60 +80,60 @@ def parse_rom(infile):
 
         logging.info(cwd)
 
-        current_date = datetime.now()
-
         for func, func_caller in callers.items():
             try:
-                func_str = '{:02x}'.format(func)
+                func_str = '{:04x}'.format(func)
             except ValueError:
                 func_str = '{}'.format(func)
     
             logging.info("Seeking to address 0x{} in radare.".format(func_str))
-            logging.debug(r2.cmd(func_str))   # seek to the address of this func
-            logging.info("Creating main function JSON, Disassembly")
+            logging.debug(r2.cmd("s {:04x}".format(func)))   # seek to the address of this func
+            logging.info("Creating main caller JSON, Disassembly")
             r2.cmd('aaa')
-            func_caller.json = r2.cmd('pdj') # pull JSON disassembly from R2
+            func_caller.json = r2.cmd('agdj') # pull JSON disassembly from R2
             func_caller.dot = r2.cmd('agd')  # pull dot for function from R2
         
-            new_path = '{}-{}'.format(func_str, current_date.strftime("%B-%d-%Y"))
-            if not os.path.exists(new_path):
-                os.makedirs(new_path)
-            if not os.curdir == new_path:
-                os.chdir(new_path)
+            new_path = '{}-{}'.format(func_str, func_caller.count)
+#            if not os.path.exists(new_path):
+#                os.makedirs(new_path)
+#            if not os.curdir == new_path:
+#                os.chdir(new_path)
+            logging.debug("Path object for CALLER: {}".format(new_path))
+#            f1 = open ("{}.json".format(func_str), "w")
+#            f2 = open("{}.dot".format(func_str), "w")
+#            f1.write(func_caller.json)
+#            f2.write(func_caller.dot)
+#            f1.close()
+#            f2.close()
 
-            f1 = open ("{}.json".format(func_str), "w")
-            f2 = open("{}.dot".format(func_str), "w")
-            f1.write(func_caller.json)
-            f2.write(func_caller.dot)
-            f1.close()
-            f2.close()
-
+            #TODO: I'm an idiot, this is seeking to the JSR call and not the target that the JSR Points to
             for addr, callee in func_caller.callees.items():
                 try: 
                     addr_str = '0x{:04x}'.format(addr)
                 except ValueError:
                     addr_str = '{}'.format(addr)
-                logging.debug(r2.cmd(addr_str))        # now do the same for everything else within the caller struct
-                logging.info("Creating main function JSON, Disassembly")
+                logging.debug(r2.cmd("s {}".format(addr_str)))        # now do the same for everything else within the caller struct
+                #logging.info("Creating main function JSON, Disassembly")
 
                 r2.cmd('aaa')
-                callee.json = r2.cmd('pdj')
+                callee.json = r2.cmd('agdj')
                 callee.dot = r2.cmd('agd') 
 
-                sub_path = '{}-{}'.format(addr_str, current_date.strftime("%B-%d-%Y"))
-                if not os.path.exists(sub_path):
-                    os.makedirs(sub_path)              
-
-                os.chdir(sub_path)
-                f1 = open ("{}.json".format(addr_str), "w")
-                f2 = open("{}.dot".format(addr_str), "w")
-                f1.write(callee.json)
-                f2.write(callee.dot)
-                f1.close()
-                f2.close()
-                os.chdir("..")
-            os.chdir("..")
-        os.chdir(cwd)
+                sub_path = '{}'.format(addr_str)
+#                if not os.path.exists(sub_path):
+#                    os.makedirs(sub_path)              
+                logging.info("Path object for CALLEE: {}".format(sub_path))
+                logging.info("Callee JSON: {}".format(callee.json))
+#                os.chdir(sub_path)
+#                f3 = open ("{}.json".format(addr_str), "w")
+#                f4 = open("{}.dot".format(addr_str), "w")
+#                f3.write(callee.json)
+#                f4.write(callee.dot)
+#                f3.close()
+#                f4.close()
+#                os.chdir("..")
+#            os.chdir("..")
+#        os.chdir(cwd)
     # For each caller, the address is paired with the JSON of the corresponding function
     # After the JSON is fully parsed, the data structure is returned to the PARSE_ROM func
         r2.quit()
@@ -165,10 +166,11 @@ def get_callers(candidates):
             callee_candidate = callee(int(candidate[0], 16), int(candidate[3], 16))
             cand_list[callee_candidate.base_addr] = callee_candidate
 
-    logging.info("Found {} potential candidates for grouping.".format(len(candidate)))
+    logging.info("Found {} potential candidates for grouping.".format(len(cand_list)))
 
     # form groupings based off of "close" call groupings
     func = current = None
+    call = None
     callers = {}
 
     for address, candidate in sorted(cand_list.iteritems(), key=lambda (k,v): (v,k)): # iterate over items in-order (by address)
@@ -179,7 +181,7 @@ def get_callers(candidates):
             func = current = address     # current starts at the base address, though functions may start earlier
             call = caller(address)
 
-        elif (abs(address - current) <= 0x5): # a candidate is "close" to another if it is within 10 of the next address
+        elif (abs(address - current) <= 0xA): # a candidate is "close" to another if it is within 10 of the next address
             call.push(address, candidate)    # push a candidate into the caller
             current = address
 
@@ -226,19 +228,18 @@ def main ():
     else:            # do ROM-level analysis with R2pipe
         #ret = parse_json(parse_rom(infile), None)
 
-        regex = re.compile(r'[\d\w]+$')
-        dir_title =  regex.search(infile)
-        working_dir = '{}'.format(dir_title.group(0))
+        regex = re.search(r'[A-Z]{2}\d\d', infile) # pull the ECU model from the filename
+        dir_title =  regex.group(0)
+        working_dir = '{}'.format(dir_title)
 
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
         if not os.curdir == working_dir:
             os.chdir(working_dir)
-        current_date = datetime.now()
         
-        regex = re.compile(r'\d\w+-\d\w+')
-        dir_title =  regex.search(infile)
-        working_dir = '{}-{}'.format(dir_title, current_date.strftime("%B-%d-%Y"))
+        regex = re.search(r'\d\w+-\d\w+-\w{1,4}', infile) # get the ROM from the filename
+        dir_title =  regex.group(0)
+        working_dir = '{}'.format(dir_title)
 
         if not os.path.exists(working_dir):
             os.makedirs(working_dir)
