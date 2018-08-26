@@ -4,10 +4,11 @@ import json
 import jsongraph
 import pprint
 import r2pipe
-from datetime import datetime
 import os
 import logging
 import re
+from subprocess import check_call
+from datetime import datetime
 
 class callee:
     base_addr = 0x0 # address of the callee
@@ -33,8 +34,13 @@ class caller:
     json = ""      # json representation of this caller function
     dot = ""       # dot represenation of this caller function
 
-    def __init__(self, base_addr):
+    def __init__(self, base_addr, base_cand):
         self.base_addr = base_addr
+        self.callees[base_addr] = base_cand
+        self.count += 1
+        self.callees = {}
+        self.json = ""
+        self.dot = ""
 
     def push(self, base_addr, callee):
         self.count += 1
@@ -81,59 +87,68 @@ def parse_rom(infile):
         logging.info(cwd)
 
         for func, func_caller in callers.items():
+            logging.info ("Func: 0x{:04x} Caller: {}".format(func, func_caller))
+            for addr, callee in func_caller.callees.items():
+                logging.info ("Addr: 0x{:04x} Callee: {}".format(addr, callee))
+
+        for func, func_caller in callers.items():
             try:
                 func_str = '{:04x}'.format(func)
             except ValueError:
                 func_str = '{}'.format(func)
     
             logging.info("Seeking to address 0x{} in radare.".format(func_str))
-            logging.debug(r2.cmd("s {:04x}".format(func)))   # seek to the address of this func
+            logging.debug(r2.cmd("0x{:04x}".format(func)))   # seek to the address of this func
             logging.info("Creating main caller JSON, Disassembly")
             r2.cmd('aaa')
             func_caller.json = r2.cmd('agdj') # pull JSON disassembly from R2
             func_caller.dot = r2.cmd('agd')  # pull dot for function from R2
         
             new_path = '{}-{}'.format(func_str, func_caller.count)
-#            if not os.path.exists(new_path):
-#                os.makedirs(new_path)
-#            if not os.curdir == new_path:
-#                os.chdir(new_path)
+            if not os.path.exists(new_path):
+                os.makedirs(new_path)
+            if not os.curdir == new_path:
+                os.chdir(new_path)
             logging.debug("Path object for CALLER: {}".format(new_path))
-#            f1 = open ("{}.json".format(func_str), "w")
-#            f2 = open("{}.dot".format(func_str), "w")
-#            f1.write(func_caller.json)
-#            f2.write(func_caller.dot)
-#            f1.close()
-#            f2.close()
+            f1 = open ("{}.json".format(func_str), "w")
+            f2 = open("{}.dot".format(func_str), "w")
+            f1.write(func_caller.json)
+            f2.write(func_caller.dot)
+            f1.close()
+            f2.close()
 
             #TODO: I'm an idiot, this is seeking to the JSR call and not the target that the JSR Points to
             for addr, callee in func_caller.callees.items():
                 try: 
-                    addr_str = '0x{:04x}'.format(addr)
+                    addr_str = str('0x{:04x}'.format(addr))
                 except ValueError:
-                    addr_str = '{}'.format(addr)
-                logging.debug(r2.cmd("s {}".format(addr_str)))        # now do the same for everything else within the caller struct
-                #logging.info("Creating main function JSON, Disassembly")
+                    addr_str = str('{}'.format(addr))
+
+                logging.debug(r2.cmd("s 0x{:04x}".format(callee.dest_addr)))    # seek to specified addr
 
                 r2.cmd('aaa')
                 callee.json = r2.cmd('agdj')
                 callee.dot = r2.cmd('agd') 
 
                 sub_path = '{}'.format(addr_str)
-#                if not os.path.exists(sub_path):
-#                    os.makedirs(sub_path)              
+#                sub_path = re.sub("[^x0-9a-fA-F]+", "", sub_path) # remove any non-hex chars from string
+
+                if not os.path.exists(sub_path):
+                    os.makedirs(sub_path)  
+
                 logging.info("Path object for CALLEE: {}".format(sub_path))
-                logging.info("Callee JSON: {}".format(callee.json))
-#                os.chdir(sub_path)
-#                f3 = open ("{}.json".format(addr_str), "w")
-#                f4 = open("{}.dot".format(addr_str), "w")
-#                f3.write(callee.json)
-#                f4.write(callee.dot)
-#                f3.close()
-#                f4.close()
-#                os.chdir("..")
-#            os.chdir("..")
-#        os.chdir(cwd)
+                os.chdir(sub_path)
+
+                f3 = open ("{}.json".format(sub_path), "w")
+                f4 = open("{}.dot".format(sub_path), "w")
+                check_call(['dot','-Tpng', '-o', "{}.png".format(sub_path),"{}.dot".format(sub_path)])
+                f3.write(callee.json)
+                f4.write(callee.dot)
+                f3.close()
+                f4.close()
+                os.chdir("..")
+            os.chdir("..")
+        os.chdir(cwd)
     # For each caller, the address is paired with the JSON of the corresponding function
     # After the JSON is fully parsed, the data structure is returned to the PARSE_ROM func
         r2.quit()
@@ -164,7 +179,7 @@ def get_callers(candidates):
         candidate = candidate.split()
         if isHex(candidate[3]): # Don't add any non-hex function calls, for the broken instructions
             callee_candidate = callee(int(candidate[0], 16), int(candidate[3], 16))
-            cand_list[callee_candidate.base_addr] = callee_candidate
+            cand_list[int(candidate[0], 16)] = callee_candidate
 
     logging.info("Found {} potential candidates for grouping.".format(len(cand_list)))
 
@@ -179,18 +194,29 @@ def get_callers(candidates):
 
         if (func == None):                # no defined caller, make a new one starting at first address
             func = current = address     # current starts at the base address, though functions may start earlier
-            call = caller(address)
+            call = caller(address, candidate)
 
         elif (abs(address - current) <= 0xA): # a candidate is "close" to another if it is within 10 of the next address
             call.push(address, candidate)    # push a candidate into the caller
             current = address
+            print "current count in call: {}".format(call.count)
 
         else:
-            if (call.count > 3):             # if there are less than 5 candiates in the caller, discard
-                callers[func] = call      # save the caller object, otherwise overwrite it
+            if (call.count > 5):                # if there are less than 5 candiates in the caller, discard
+                callers[func] = call            # save the caller object, otherwise overwrite it    
+            del call    
             func = current = None                   # clear current, start search for next candidate
 
+
     logging.info("Found {} groups of candidates.".format(len(callers)))
+
+    for key, obj in callers.items():
+        print "Main key: {} Object: {}".format(key, obj)
+        print "Object has {} objects:".format(obj.count)
+        print "Callees dict is of size: {}".format(len(obj.callees))
+        #for k2, o2 in obj.callees.items():
+        #    print "Sub key: {} Sub object: {}".format(k2, o2)
+        #    print "Contents of sub object: {}".format(callee)
 
     return callers
 
