@@ -1,3 +1,4 @@
+#!/usr/bin/python
 import sys
 import argparse
 import json
@@ -20,12 +21,6 @@ class callee:
     def __init__(self, base_addr, dest_addr):
         self.base_addr = base_addr
         self.dest_addr = dest_addr
-
-    def set_json(self, json):
-        self.json = json
-
-    def set_dot(self, dot):
-        self.dot = dot
 
 class caller:
     count = 0
@@ -50,7 +45,6 @@ class caller:
 # either compare to a function and return information about the tree, or
 def parse_json(json_tree, comp):
     # TODO: parse JSON file, load into a data structure for analysis
-    
     graph = json.load(json_tree) # create JSON object from loaded graph
 
     if comp:
@@ -62,30 +56,7 @@ def parse_json(json_tree, comp):
 
     return graph
 
-# this method is responsible for
-# - automatically parsing the rom file for caller candidates (that is, a function with 5 or more CALL type functions)
-# - parsing the callees of those functions, that is, the functions called by the caller
-# - creating a JSON graph structure of those functions
-# - returning that graph to be parsed by other functions
-def parse_rom(infile):
-    print("Loading into R2...")
-
-    # load infile into R2
-    r2 = r2pipe.open(infile)
-
-    if r2:                             # assert the R2 file opened correctly
-        r2.cmd('e asm.arch=m7700')     # set the architecture env variable
-        logging.info("R2 loaded arch: " + r2.cmd('e asm.arch'))
-        logging.info(r2.cmd('aa'))                # analyze all
-        candidates = r2.cmd('/A call') # Use the /A call command in R2 to specify all R2 callees 
-        
-        logging.info(candidates)
-
-        callers = get_callers(candidates)
-        cwd = os.getcwd()
-
-        logging.info(cwd)
-
+def output_graphs(callers, r2):
         for func, func_caller in callers.items():
             logging.info ("Func: 0x{:04x} Caller: {}".format(func, func_caller))
             for addr, callee in func_caller.callees.items():
@@ -117,7 +88,6 @@ def parse_rom(infile):
             f1.close()
             f2.close()
 
-            #TODO: I'm an idiot, this is seeking to the JSR call and not the target that the JSR Points to
             for addr, callee in func_caller.callees.items():
                 try: 
                     addr_str = str('0x{:04x}'.format(addr))
@@ -131,7 +101,7 @@ def parse_rom(infile):
                 callee.dot = r2.cmd('agd') 
 
                 sub_path = '{}'.format(addr_str)
-#                sub_path = re.sub("[^x0-9a-fA-F]+", "", sub_path) # remove any non-hex chars from string
+#               sub_path = re.sub("[^x0-9a-fA-F]+", "", sub_path) # remove any non-hex chars from string
 
                 if not os.path.exists(sub_path):
                     os.makedirs(sub_path)  
@@ -148,15 +118,31 @@ def parse_rom(infile):
                 f4.close()
                 os.chdir("..")
             os.chdir("..")
+        cwd = os.getcwd()
         os.chdir(cwd)
-    # For each caller, the address is paired with the JSON of the corresponding function
-    # After the JSON is fully parsed, the data structure is returned to the PARSE_ROM func
-        r2.quit()
-    
+        return callers    
+
+# this method is responsible for
+# - automatically parsing the rom file for caller candidates (that is, a function with 5 or more CALL type functions)
+# - parsing the callees of those functions, that is, the functions called by the caller
+# - creating a JSON graph structure of those functions
+# - returning that graph to be parsed by other functions
+def parse_rom(infile):
+
+    print("Loading into R2...")
+    r2 = r2pipe.open(infile)           # load infile into R2 - error if not found
+    if r2:                             # assert the R2 file opened correctly
+        r2.cmd('e asm.arch=m7700')     # set the architecture env variable
+        logging.info("R2 loaded arch: " + r2.cmd('e asm.arch')) # check that arch loaded properly
+        logging.info(r2.cmd('aa'))     # analyze all
+        candidates = r2.cmd('/A call') # Use the /A call command in R2 to specify all R2 callees 
+        logging.info("Result of R2 call search: {}".format(candidates))
+        callers = get_callers(candidates) # grab all "callers" functions from the list of candidates
+        output_graphs(callers, r2)    # output those callers and the callee functions to files
     else: 
         print("Error parsing R2")
-        r2.quit()
-
+    r2.quit()
+    print("Quitting R2...")
     return callers
 
 # helper function to check if a string is a hex string or not
@@ -190,7 +176,7 @@ def get_callers(candidates):
 
     for address, candidate in sorted(cand_list.iteritems(), key=lambda (k,v): (v,k)): # iterate over items in-order (by address)
 
-        logging.debug("Candidate func address: {}\nCurrent address: {}".format(address, current))
+        logging.info("Candidate func address: {}\nCurrent address: {}".format(address, current))
 
         if (func == None):                # no defined caller, make a new one starting at first address
             func = current = address     # current starts at the base address, though functions may start earlier
@@ -199,7 +185,6 @@ def get_callers(candidates):
         elif (abs(address - current) <= 0xA): # a candidate is "close" to another if it is within 10 of the next address
             call.push(address, candidate)    # push a candidate into the caller
             current = address
-            print "current count in call: {}".format(call.count)
 
         else:
             if (call.count > 5):                # if there are less than 5 candiates in the caller, discard
@@ -207,16 +192,7 @@ def get_callers(candidates):
             del call    
             func = current = None                   # clear current, start search for next candidate
 
-
     logging.info("Found {} groups of candidates.".format(len(callers)))
-
-    for key, obj in callers.items():
-        print "Main key: {} Object: {}".format(key, obj)
-        print "Object has {} objects:".format(obj.count)
-        print "Callees dict is of size: {}".format(len(obj.callees))
-        #for k2, o2 in obj.callees.items():
-        #    print "Sub key: {} Sub object: {}".format(k2, o2)
-        #    print "Contents of sub object: {}".format(callee)
 
     return callers
 
@@ -226,59 +202,41 @@ def main ():
     # can also output JSON file as a .DOT file, or pull in a ROM and call R2 
     parser = argparse.ArgumentParser(description='Import and process M7700 JSON Graph files.')
 
-    parser.add_argument('filename', metavar='filename', nargs='?', type=str, default=sys.stdin, 
+    parser.add_argument('filename', metavar='filename', nargs='+', type=str, default=sys.stdin, 
                    help='M7700 ROM file for parsing')
-
-    parser.add_argument('-j','--json', action="store_true", #flag and filename
-                   help='Compare JSON method with another JSON tree, find similarities')
 
     logging.basicConfig(filename='log_filename.txt', level=logging.DEBUG)
 
-
-
-  #  parser.add_argument('-d','--dot', metavar='dotfile', type=argparse.FileType('w'), default=sys.stdout,  #flag and filename
-  #                 help='Convert to a graphviz dot flie')
-
-  #  args = parser.parse_args(['-dr'])
     args = parser.parse_args()
-    infile = args.filename
-    #dot_file = args.dot
-    json_compare = args.json
 
-    # parse each file name, attempt to pull JSON from files
-    if json_compare: # JSON file and comparison provided
-        ret = open(infile, 'r')
+    for infile in args.filename:
+        if infile is not None:
+            print("Opening file: {}".format(infile))
+        #infile = value
 
-        ret = parse_json(infile, args.json)
-
-    else:            # do ROM-level analysis with R2pipe
-        #ret = parse_json(parse_rom(infile), None)
-
-        regex = re.search(r'[A-Z]{2}\d\d', infile) # pull the ECU model from the filename
-        dir_title =  regex.group(0)
-        working_dir = '{}'.format(dir_title)
-
-        if not os.path.exists(working_dir):
-            os.makedirs(working_dir)
-        if not os.curdir == working_dir:
-            os.chdir(working_dir)
+        # do ROM-level analysis with R2pipe
+        if (os.path.isfile(infile)):
+            regex = re.search(r'[A-Z]{2}\d\d', infile) # pull the ECU model from the filename
+            dir_title =  regex.group(0)
+            working_dir = '{}'.format(dir_title)
+            if not os.path.exists(working_dir):
+                os.makedirs(working_dir)
+            if not os.curdir == working_dir:
+                os.chdir(working_dir)
         
-        regex = re.search(r'\d\w+-\d\w+-\w{1,4}', infile) # get the ROM from the filename
-        dir_title =  regex.group(0)
-        working_dir = '{}'.format(dir_title)
+            regex = re.search(r'\d\w+-\d\w+-\w{1,4}', infile) # get the ROM from the filename
+            dir_title =  regex.group(0)
+            working_dir = '{}'.format(dir_title)
 
-        if not os.path.exists(working_dir):
-            os.makedirs(working_dir)
-        if not os.curdir == working_dir:
-            os.chdir(working_dir)
+            if not os.path.exists(working_dir):
+                os.makedirs(working_dir)
+            if not os.curdir == working_dir:
+                os.chdir(working_dir)
 
-        ret = parse_rom(infile)
-
-#    print(ret)    
-#    if dot_file:
-#        #TODO: convert JSON to DOT, output
-#        dot_file.write((json.dumps(ret))) # dump graph, TODO: parse graph
-#        dot_file.close()
+            callers = parse_rom(infile)
+            print ("Number of callers: {}".format(len(callers)))
+        else: 
+            print ("File '{}' not found".format(infile))
 
 # start
 main()
