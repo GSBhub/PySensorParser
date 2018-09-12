@@ -40,17 +40,18 @@ class caller:
 
     def __init__(self, base_addr, base_cand):
         self.base_addr = base_addr
-        self.callees[self.base_addr] = base_cand
-        self.count += 1
         self.callees = {}
+        self.callees[base_addr] = base_cand
+        self.count += 1
         self.json = ""
         self.dot = ""
         self.graph = nx.Graph()
         self.master = nx.Graph()
 
     def push(self, new_addr, callee):
-        self.count += 1
-        self.callees[new_addr] = callee
+        if self.callees.has_key(new_addr) is False:
+            self.count += 1
+            self.callees[new_addr] = callee
 
 # reset vector analysis func
 class reset_vector:
@@ -179,42 +180,50 @@ def output_graphs(callers, r2):
         os.chdir(cwd)
         return callers    
 
+# locates the reset vector address from a valid M7700 binary
+# using a currently open radare2 session
 def get_rst(r2):
-    r2.cmd("0xfffe")     # seek to the address for the reset vector
-    big_endian = str(r2.cmd("px 2")) # print last two bytes of rst vector
+    r2.cmd("s 0xfffe")     # seek to the address for the reset vector
+    big_endian = str(r2.cmd("px0")) # print last two bytes of rst vector
     
-    big_endian = str(big_endian.splitlines().pop())
+    rst = 0x0
+    
     if big_endian:
-        print big_endian
-        reg = re.search(r'^([A-Fa-f0-9]{2})([A-Fa-f0-9]{2})', big_endian)
-        rst_addr_little_endian = "{}{}".format(reg.group(1), reg.group(0))
-
-        print rst_addr_little_endian
+        rst = int("{}{}".format(big_endian[2:4], big_endian[:2]), 16) # flip endianness of last two bytes
+        logging.debug("rst vector address found at: 0x{:04x}".format(rst))
     else:
-        print "ERR - regex search failed"
-        print big_endian
+        logging.debug("ERR - reset vector search failed")
+
+    return rst
 
 # this method is responsible for
 # - automatically parsing the rom file for caller candidates (that is, a function with 5 or more CALL type functions)
 # - parsing the callees of those functions, that is, the functions called by the caller
 # - creating a JSON graph structure of those functions
 # - returning that graph to be parsed by other functions
-def parse_rom(infile):
+def parse_rom(infile, output):
     
     print("Loading '{}' into R2...".format(infile))
     r2 = r2pipe.open(infile)           # load infile into R2 - error if not found
     if r2:                             # assert the R2 file opened correctly
         r2.cmd('e asm.arch=m7700')     # set the architecture env variable
         logging.info("R2 loaded arch: " + r2.cmd('e asm.arch')) # check that arch loaded properly
-        logging.info(r2.cmd('aaa'))     # analyze all
-        candidates = r2.cmd('/A call') # Use the /A call command in R2 to specify all R2 callees 
-        logging.info("Result of R2 call search: {}".format(candidates))
-        callers = get_callers(candidates) # grab all "callers" functions from the list of candidates
-        output_graphs(callers, r2)    # output those callers and the callee functions to files
-
 
         # TODO: finish this
-        #get_rst(r2) - WIP
+        rst = get_rst(r2) 
+        logging.info ("Binary reset vector located at 0x{:04x}".format(rst))
+        logging.info ("Attempting to seek to reset vector...")
+        r2.cmd("s 0x{:04x}".format(rst))
+        logging.info ("R2 seeked to address {}".format(r2.cmd("s")))
+
+        logging.info(r2.cmd('aaa'))    
+        candidates = r2.cmd('/A call') # Search R2 for all "call" instructions
+        logging.info("Result of R2 call search: {}".format(candidates))
+        callers = get_callers(candidates) # grab all "callers" functions from the list of candidates
+        
+        if output:
+            output_graphs(callers, r2)    # output those callers and the callee functions to files
+
     else: 
         print("Error parsing R2")
     r2.quit()
@@ -256,7 +265,7 @@ def get_callers(candidates):
         #logging.info("Candidate func address: {}\nCurrent address: {}".format(address, current))
 
         if (func == 0x0):                # no defined caller, make a new one starting at first address
-    
+
             func = int(address or 0)     # current starts at the base address, though functions may start earlier
             current = func
             call = caller(func, candidate)
@@ -267,11 +276,13 @@ def get_callers(candidates):
             current = (address or 0)
 
         else:
-            if (call.count > 5):                # if there are less than 5 candiates in the caller, discard
+            if (call.count >= 4):                # if there are less than 5 candiates in the caller, discard
                 callers[func] = call            # save the caller object, otherwise overwrite it   
-            del call    
-            func = 0x0                   # clear current, start search for next candidate
-            current = 0x0
+
+            func = int(address or 0)     # current starts at the base address, though functions may start earlier
+            call = caller(func, candidate)
+            call.push(address, candidate)    # push THIS candidate into the caller (first call of mass caller func)
+            current = func
 
     logging.info("Found {} groups of candidates.".format(len(callers)))
 
@@ -286,6 +297,9 @@ def main ():
     parser.add_argument('filename', metavar='filename', nargs='+', type=str, default=sys.stdin, 
                    help='M7700 ROM file for parsing')
 
+    parser.add_argument('-o', '--output', action='store_true',
+                   help='Output M7700 rom to file')
+
     logging.basicConfig(filename='log_filename.txt', level=logging.DEBUG)
 
     args = parser.parse_args()
@@ -297,24 +311,33 @@ def main ():
 
         # do ROM-level analysis with R2pipe
         if (os.path.isfile(infile)):
-            regex = re.search(r'[A-Z]{2}\d\d', infile) # pull the ECU model from the filename
-            dir_title =  regex.group(0)
-            working_dir = '{}'.format(dir_title)
-            if not os.path.exists(working_dir):
-                os.makedirs(working_dir)
-            if not os.curdir == working_dir:
-                os.chdir(working_dir)
-        
-            regex = re.search(r'\d\w+-\d\w+-\w{1,4}', infile) # get the ROM from the filename
-            dir_title =  regex.group(0)
-            working_dir = '{}'.format(dir_title)
+            if args.output: # only output if specified
+                regex = re.search(r'[A-Z]{2}\d\d', infile) # pull the ECU model from the filename
+                backup_string = infile.split('-')
+                try: 
+                    dir_title =  regex.group(0)
+                except AttributeError:
+                    dir_title = "{}".format(backup_string[3])
+                working_dir = '{}'.format(dir_title)
+                if not os.path.exists(working_dir):
+                    os.makedirs(working_dir)
+                if not os.curdir == working_dir:
+                    os.chdir(working_dir)
+            
+                regex = re.search(r'\d\w+-\d\w+-\w{1,4}', infile) # get the ROM from the filename
+                try: 
+                    dir_title =  regex.group(0)
+                except AttributeError:                
+                    dir_title = "{}-{}-{}".format(backup_string[0], backup_string[1], backup_string[2])
 
-            if not os.path.exists(working_dir):
-                os.makedirs(working_dir)
-            if not os.curdir == working_dir:
-                os.chdir(working_dir)
+                working_dir = '{}'.format(dir_title)
 
-            callers = parse_rom(infile)
+                if not os.path.exists(working_dir):
+                    os.makedirs(working_dir)
+                if not os.curdir == working_dir:
+                    os.chdir(working_dir)
+            
+            callers = parse_rom(infile, args.output)
             print ("Number of callers: {}".format(len(callers)))
         else: 
             print ("File '{}' not found".format(infile))
