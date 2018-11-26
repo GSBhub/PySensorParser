@@ -124,9 +124,10 @@ class block:
                 features[1] = "{}{}".format(features[1], instr[1].opcode)
         
         features.update(self.feature_gen_p2())
-
+        features.update(self.feature_gen_p3())
         return features
 
+    # feature gen part 2 generates features, breaking them into 2-grams
     def feature_gen_p2(self):
         features = {}
         n = 2
@@ -149,6 +150,25 @@ class block:
             
             features[val.base_addr] = feat
 
+        return features
+
+    def feature_gen_p3(self):       
+        features = {}
+        n = 2
+        li = self.seq_inst
+        keys = li.keys()
+        vals = li.values()
+        
+        for val in vals:
+            feat = ""
+            start = vals.index(val)
+            sub_list = vals[start: start + n - 1]
+            for instr in sub_list:
+                for param in instr.params:
+                    if "#" in param:
+                        feat = "{}{}".format(feat, param)
+        
+            features[val.base_addr] = feat
         return features
 
 class CFG:
@@ -439,7 +459,7 @@ def load_sensors(fn, sensor_list):
         ra2.cmd("e anal.to=0xffd0")
         #ra2.cmd("e anal.hasnext=true")
         ra2.cmd("0x93c1")
-        ra2.cmd("aaa")
+        ra2.cmd("aa")
         sensor_obj = {}
 
         for sensor in sensor_list:
@@ -466,7 +486,7 @@ def load_sensors(fn, sensor_list):
 
 def get_sensor_val(val, control, test):
 
-    sensor = "0x0000" # default value if not found
+    sensor = "Sensor Not Found" # default value if not found
     control_sensor = sensor_values[val]
 
     control_features = control.get_ctrl_features(control_sensor)
@@ -491,8 +511,8 @@ def get_sensor_val(val, control, test):
             largest = i
             sensor = addr 
                 
-        i = 0
-        
+        i = 0 
+    
     return sensor
 
 def jaccard(a, b):
