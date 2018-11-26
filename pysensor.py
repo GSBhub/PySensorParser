@@ -1,4 +1,8 @@
 #!/usr/bin/python
+"""
+    This branch of the pysensor module takes a list of found addresses for likely sensors
+    and returns a list of the sensor values for each of those addresses. Still very much a WIP
+"""
 import sys
 import argparse
 import json
@@ -11,181 +15,321 @@ import re
 import subprocess
 import networkx as nx
 import pygraphviz
+import md5
+import pprint
+import collections
+import itertools
 from collections import OrderedDict
 from networkx.drawing import nx_agraph
 from subprocess import check_call
 from datetime import datetime
 
-class callee:
-    base_addr = 0x0 # address of the callee
-    dest_addr = 0x0 # where the callee points
+# template for all function data types
+
+visited = {}
+last_visited = {}
+functions = []
+feature_visited = list()
+
+# Predefined functions containing sensor addresses for comparisions from the USDM 93 EG33
+sensors = {
+    'batt_voltage': ['0x9a56', '0x9f5b', '0xa166', '0xa307', '0xae2c', '0xd982', '0xe1cd'],
+    'vehicle_speed': ['0x9be8', '0x9dce', '0xa59d', '0xa9a7', '0xafc6', '0xb5fc', '0xb960'],
+    'engine_speed': ['0xa59d', '0xa5ec', '0xa9a7', '0xafc6', '0xb5bf', '0xb960', '0xc356'],
+    'water_temp': ['0x9b46', '0xab56'],
+    'ignition_timing': ['0xdb1a', '0xda0f'],
+    'airflow': ['0xddcd'],
+    'throttle_position': ['0xe1cd'],
+    'knock_correction': ['0xafc6']
+}
+
+sensor_values = {
+    'batt_voltage': '0x102f',
+    'vehicle_speed': '0x1071',
+    'engine_speed': '0x106f',
+    'water_temp': '0x1185',
+    'ignition_timing': '0x10a2',
+    'airflow': '0x1283',
+    'throttle_position': '0x128c',
+    'knock_correction': '0x12a7'
+
+}
+
+class instruction:
+
+    def __init__(self, base_addr, opcode):
+        self.base_addr = hex(base_addr)
+        params = opcode.split()
+        self.opcode = params[0]
+        self.params = params[1:]
+
+    def __str__(self):
+        if self.params:
+            ret = "OP: {}\nParams: {}\n".format(self.opcode, self.params)
+        else:
+            ret = "OP: {}\n".format(self.opcode)
+        return ret
+
+class block:
+    base_addr = 0x0
+    fail = None
+    jump = None
+
+    def __init__(self, base_addr, seq_json):
+        self.base_addr = hex(base_addr)
+        self.seq_inst = OrderedDict()
+
+        for op in seq_json:
+
+            self.seq_inst[op[u'offset']] = instruction(op[u'offset'], op[u'opcode'])
+
+    # returns a hash of the instructions
+    def get_seq_inst(self): 
+        temp = ur""
+        for instruction in self.seq_inst.values():
+            temp = temp + ur"{}".format(instruction.opcode)
+        #logging.debug("block addr: {}, temp: {}\n".format(self.base_addr, temp))
+        return [(md5.new(temp).hexdigest())]
+    
+    def ret_instruct_list(self):
+        temp = ur""
+        for instruction in self.seq_inst.values():
+            temp = temp + ur"{}".format(instruction.opcode)
+        #logging.debug("block addr: {}, temp: {}\n".format(self.base_addr, temp))
+        return [temp]
+
+    def print_inst(self):
+        for instruction in self.seq_inst.itervalues():
+            print(instruction)
+
+    def __str__(self):
+        ret = "Base_addr: 0x{:04x}\n".format(self.base_addr)
+        if self.fail:
+            ret += "\tFail: 0x{:04x}\n".format(self.fail.base_addr)
+        if self.jump:
+            ret += "\tJump: 0x{:04x}\n".format(self.jump.base_addr)
+        return ret
+
+    def gen_features(self, start):
+        features = {0:"", 1:""}
+        li = self.seq_inst
+        found = False
+        for instr in li.items():
+            if start == instr: 
+                found = True
+                features[0] = "{}{}".format(features[0], instr[1].opcode)
+            elif found:
+                features[0] = "{}{}".format(features[0], instr[1].opcode)
+            else:
+                features[1] = "{}{}".format(features[1], instr[1].opcode)
+        
+        features.update(self.feature_gen_p2())
+
+        return features
+
+    def feature_gen_p2(self):
+        features = {}
+        n = 2
+        li = self.seq_inst
+        keys = li.keys()
+        vals = li.values()
+        
+        for val in vals:
+            feat = ""
+            start = vals.index(val)
+            sub_list = vals[start: start + n - 1]
+            for instr in sub_list:
+                feat = "{}{}".format(feat, instr.opcode)
+        
+            # append first instr of next blocks
+            if self.fail is not None:
+                feat = "{}{}".format(feat, self.fail.seq_inst.get(int(self.fail.base_addr, 16)).opcode)
+            if self.jump is not None:
+                feat = "{}{}".format(feat, self.jump.seq_inst.get(int(self.jump.base_addr, 16)).opcode)
+            
+            features[val.base_addr] = feat
+
+        return features
+
+class CFG:
+    first = None 
+
+    def __init__(self, json):
+        if json:
+            self.json = json[0]
+        else:
+            self.json = ""
+        if u'offset' in self.json:
+            self.base_addr = hex(json[0][u'offset'])
+            if u'blocks' in json[0]:
+                blocks = json[0][u'blocks']
+                dict_block = {}
+                # pass addr of first block, ops of first block, and pointers of first block
+
+                self.first = block(blocks[000][u'offset'], blocks[000][u'ops'])
+
+                # create a dictionary of all blocks
+                for blk in blocks:
+                    dict_block [blk[u'offset']] = [block(
+                    blk[u'offset'], 
+                    blk[u'ops']), blk]
+
+                # match up all the block objects to their corresponding jump, fail addresses
+                for key, pair in dict_block.items():
+                    block_obj = pair[0]
+                    block_json = pair[1]
+                    # really, really sloppy method for now
+                    # JSON has some weird errors where functions don't match up to the jump addresses
+                    # might be an issue with the r2 debugger, but this is just a sloppy work-around
+                    if u'fail' in block_json:
+                        try:
+                            block_obj.fail = dict_block[block_json[u'fail']][0]
+                        except KeyError:
+                            continue
+
+                    if u'jump' in block_json:
+                        try:
+                            block_obj.jump = dict_block[block_json[u'jump']][0]
+                        except KeyError:
+                            continue
+                self.first = dict_block[blocks[000][u'offset']][0]
+            #else:      
+                #raise KeyError()
+        #else: 
+            #raise KeyError()
+
+    def __str__(self):
+        ret = ""
+        node = self.first
+        while node is not None:
+            ret += "{}\n".format(node)
+            if node.fail:
+                node = node.fail
+            else:
+                node = node.jump
+
+        return ret              
+
+    def print_blocks(self, start):
+        ret = ""
+        i = 0
+        if start:
+            for inst in start.seq_inst:
+                ret = "{}{}".format(ret, inst)
+            
+            if start.jump is not None:
+                ret = "{}{}".format(ret, self.print_blocks(start.jump))
+            if start.fail is not None:
+                ret = "{}{}".format(ret, self.print_blocks(start.fail))
+        return ret
+
+    def gen_features(self, instr, blk):
+        
+        features = blk.gen_features(instr)    
+        #features = blk.get_seq_inst()
+       
+        return features
+
+    # targeted feature sensor creation, for use with known values
+    def get_ctrl_feature(self, blk, sensor):
+        features = {}
+        if blk is not None:
+            il = blk.seq_inst
+            feature_visited.append(blk)
+            for instr in il.items():
+                for param in instr[1].params:
+                    if sensor in features.keys():
+                        if sensor in param:
+                            features[ur"{}".format(param)].update(self.gen_features(instr, blk))
+                    else:
+                        if sensor in param:
+                            features[sensor] = self.gen_features(instr, blk)
+            # recurse through all later blocks to look for additional candidates
+            if (blk.jump is not None and blk.jump not in feature_visited):
+                features.update(self.get_ctrl_feature(blk.jump, sensor))
+            if (blk.fail is not None and blk.fail not in feature_visited):
+                features.update(self.get_ctrl_feature(blk.fail, sensor))    
+
+        return features
+    #returns list of features with address of sensors
+    def get_feature(self, blk):
+        features = {}
+        global feature_visited
+        #check item for LDA candidate, potential for sensor
+        if blk is not None:
+            il = blk.seq_inst
+            feature_visited.append(blk)
+            for instr in il.items():
+                #if (((u'STA' in instr[1].opcode or u'STB' in instr[1].opcode or instr[1].opcode == u'LDA') or (instr[1].opcode == u'LDB')) and not ("al" in instr[1].params[0] or "bl" in instr[1].params[0]  or "ax" in instr[1].params[0] or "bx" in instr[1].params[0] or "xl" in instr[1].params[0] or "yl" in instr[1].params[0])):
+                try:
+                    for param in instr[1].params:
+                     
+                        if param not in features.keys() and "0x" in param and "#" not in param and "$" not in param:
+                            if int(param, 16) < 0x6000:
+                                features[ur"{}".format(param)] = self.gen_features(instr, blk)
+                        elif param in features.keys():
+                            features[ur"{}".format(param)].update(self.gen_features(instr, blk))
+                        elif "$" in param:
+                            hex_param = "0x{}".format(param[1:])  # remove $ from param
+                            if hex_param not in features.keys():
+                                features[ur"{}".format(hex_param)] = self.gen_features(instr, blk)
+                            else:
+                                features[ur"{}".format(hex_param)].update(self.gen_features(instr, blk))
+
+                except IndexError as ie:
+                    print ie
+                    continue
+            # recurse through all later blocks to look for additional candidates
+            if (blk.jump is not None and blk.jump not in feature_visited):
+                features.update(self.get_feature(blk.jump))
+            if (blk.fail is not None and blk.fail not in feature_visited):
+                features.update(self.get_feature(blk.fail))
+        
+        return features
+
+class function:
+    base_addr = 0x0 # address of the function
     json = ""      # json representation of function pointed to
     dot = ""       # dot representation of function pointed to
-#    count = ""     # number of instructions in this callee
-    graph = None
 
-    def __init__(self, base_addr, dest_addr):
-        self.base_addr = base_addr
-        self.dest_addr = dest_addr
-        self.graph = nx.Graph()
+    def __init__(self, base_addr, cfg):
+        self.base_addr = hex(base_addr)
+        self.children = {}
+        self.parents = {}
+        self.cfg = cfg
 
-class caller:
-    count = 0
-    base_addr = 0x0 # addr of caller function
-    callees = {}   # addr, callee pair dictionary 
-    json = ""      # json representation of this caller function
-    dot = ""       # dot represenation of this caller function
-    graph = None
-    master = None
-
-    def __init__(self, base_addr, base_cand):
-        self.base_addr = base_addr
-        self.callees = {}
-        self.callees[base_addr] = base_cand
-        self.count += 1
-        self.json = ""
-        self.dot = ""
-        self.graph = nx.Graph()
-        self.master = nx.Graph()
-
-    def push(self, new_addr, callee):
-        if self.callees.has_key(new_addr) is False:
-            self.count += 1
-            self.callees[new_addr] = callee
-
-# reset vector analysis func
-class reset_vector:
-    base_addr = 0x0
-    json = ""
-    dot = ""
-
-    def __init__(self, base_addr):
-        self.base_addr = 0x0
-
-# parse func information from JSON file
-# either compare to a function and return information about the tree, or
-def parse_json(json_tree, comp):
-    # TODO: parse JSON file, load into a data structure for analysis
-    graph = json.load(json_tree) # create JSON object from loaded graph
-
-    if comp:
-        # comp method compares the added JSON function to the graph, for similarity
-        print("WIP")
-    else: 
-        # otherwise, traverse the graph and dump the children
-        print(json.dumps(graph)) # dump graph, TODO: parse graph
-
-    return graph
-
-# -------- Output analyzed caller graphs to files
-# - Files are in a hierarchy - top level is the "caller" function
-# - next level down is the address of each "callee" jump
-# - final level is the dot and json of the callee jump 
-def output_graphs(callers, r2):
-
-        # first, generate a supergraph of all nodes for each caller
-        for func, func_caller in callers.items():
-            logging.info ("Func: 0x{:04x} Caller: {}".format(func, func_caller))
-            for addr, callee in func_caller.callees.items():
-                logging.info ("Addr: 0x{:04x} Callee: {}".format(addr, callee))
-
-        for func, func_caller in callers.items():
-           
-            func_str = '0x{:04x}'.format(func)
+    def __str__(self):
         
-            logging.info("Seeking to address {} in radare.".format(func_str))
-            r2.cmd("s {}".format(func_str))
-            logging.debug("Current addr: {}".format(r2.cmd("s")))  # seek to the address of this func
-            logging.info("Creating main caller JSON, Disassembly")
-            r2.cmd('af-')# clean analysis data
-            r2.cmd('aa')
-            #r2.cmd('af')
-            #r2.cmd('sp')
-            func_caller.json = r2.cmd('agdj') # pull JSON disassembly from R2
-            func_caller.dot = r2.cmd('agd')  # pull dot for function from R2
-        
-            func_caller.graph = nx_agraph.from_agraph(pygraphviz.AGraph(func_caller.dot)) # pull graph into networkx
+        ret = "{}\n".format(self.base_addr)
+        for child in self.children.values():
+            ret += "\t{}".format(child)
+        return ret
 
-            new_path = '{}-{}'.format(func_str, func_caller.count)
+    def push_child(self, func):
+        self.children[func.base_addr] = func
 
-            if not os.path.exists(new_path):
-                os.makedirs(new_path)
-            if not os.curdir == new_path:
-                os.chdir(new_path)
+    def get_single_feature(self, addr):
+        return self.cfg.get_feature()
 
-            proc_string = "gvpack -o {}/{}_master.dot {}/{}.dot".format(new_path, func_str, new_path, func_str)
+    def get_features(self):
+        global feature_visited
+        feature_visited = list()
+        return self.cfg.get_feature(self.cfg.first)
 
-            #logging.debug("Path object for CALLER: {}".format(new_path))
-            f1 = open ("{}.json".format(func_str), "w")
-            f2 = open("{}.dot".format(func_str), "w")
-            f1.write(func_caller.json)
-            f2.write(func_caller.dot)
-            f1.close()
-            f2.close()
-
-            for addr, callee in func_caller.callees.items():
-
-                try: 
-                    addr_str = str('0x{:04x}'.format(callee.dest_addr))
-                except ValueError:
-                    addr_str = str('0x{}'.format(callee.dest_addr))
-
-                r2.cmd("s {}".format(addr_str))
-                logging.debug("Current addr: {}".format(r2.cmd("s")))  # seek to the address of this func
-
-                r2.cmd('af-')# clean analysis data
-                r2.cmd('aa')           
-                #r2.cmd('af')
-                #r2.cmd('sp') # seek to func identified here
-
-                callee.json = r2.cmd('agdj')
-                callee.dot = r2.cmd('agd') 
-
-                sub_path = '{}'.format(addr_str)
-
-                callee.graph = nx_agraph.from_agraph(pygraphviz.AGraph(callee.dot)) # pull graph into networkx
-
-                if not os.path.exists(sub_path):
-                    os.makedirs(sub_path)  
-
-                os.chdir(sub_path)
-
-                proc_string = proc_string + (" {}/{}/{}.dot".format(new_path, '0x{:04x}'.format(addr), sub_path))
-
-                f3 = open ("{}.json".format(sub_path), "w")
-                f4 = open("{}.dot".format(sub_path), "w")
-                check_call(['dot','-Tpng', '-o', "{}.png".format(sub_path),"{}.dot".format(sub_path)])
-
-                f3.write(callee.json)
-                f4.write(callee.dot)
-                #callee.graph = nx_agraph.read_dot(f4)
-                #caller.master = nx.compose(func_caller.graph, callee.graph)
-
-                f3.close()
-                f4.close()
-                os.chdir("..")
-
-            #print proc_string
-            #process = subprocess.Popen(proc_string.split(), stdout=subprocess.PIPE)
-            #output, error = process.communicate()
-            #logging.info(output)
-            #logging.debug(error)
-            os.chdir("..")
-
-           # print func_caller.dot
-            # print func_caller.graph.edges()
-            # print func_caller.master.edges()
-
-        cwd = os.getcwd()
-        os.chdir(cwd)
-        return callers    
+    def get_ctrl_features(self, sensor):
+        global feature_visited
+        feature_visited = list()
+        return self.cfg.get_ctrl_feature(self.cfg.first, sensor)
 
 # locates the reset vector address from a valid M7700 binary
 # using a currently open radare2 session
 def get_rst(r2):
-    r2.cmd("s 0xfffe")     # seek to the address for the reset vector
+    r2.cmd("s 0xfffe")     # seek to the address for the reset vector (const for all of our binaries)
+    logging.debug("R2 Command used: 's 0xfffe'")
+
     big_endian = str(r2.cmd("px0")) # print last two bytes of rst vector
-    
+    logging.debug("R2 Command used: 'px0'")
+
     rst = 0x0
     
     if big_endian:
@@ -196,39 +340,84 @@ def get_rst(r2):
 
     return rst
 
-# this method is responsible for
-# - automatically parsing the rom file for caller candidates (that is, a function with 5 or more CALL type functions)
-# - parsing the callees of those functions, that is, the functions called by the caller
-# - creating a JSON graph structure of those functions
-# - returning that graph to be parsed by other functions
-def parse_rom(infile, output):
+# Helper function for recursive_parse_func
+# grabs all child function calls from a function analysis in R2
+def get_children(child_str):
+    p = ur"JSR.*[^$](0x[0-9a-fA-F]{4})" # grab unrecognized funcs
+    children = re.findall(p, child_str)
+    p1 = ur"JSR.*fcn.0000([0-9a-fA-F]{4})"
+    ch2 = re.findall(p1, child_str)
+    children.extend(ch2) # grab recognized funcs
+
+    int_children = list()
+    for child in children:
+        try:    
+            int_children.append(int(child, 16))
+        except TypeError:
+            print (child)
+    del children
+    return int_children
+
+# helper function for recursive parse func
+# popluates 
+def populate_cfg(addr, func_json):
     
-    print("Loading '{}' into R2...".format(infile))
-    r2 = r2pipe.open(infile)           # load infile into R2 - error if not found
-    if r2:                             # assert the R2 file opened correctly
-        r2.cmd('e asm.arch=m7700')     # set the architecture env variable
-        logging.info("R2 loaded arch: " + r2.cmd('e asm.arch')) # check that arch loaded properly
+    #json_obj = json.loads('{}'.format(func_json.decode('utf-8', 'ignore').encode('utf-8')), strict=True, object_pairs_hook=collections.OrderedDict)
+    json_obj=json.loads(unicode(func_json, errors='ignore'), strict=False, object_pairs_hook=collections.OrderedDict)
+    cfg = CFG(json_obj)
+    return cfg
 
-        # TODO: finish this
-        rst = get_rst(r2) 
-        logging.info ("Binary reset vector located at 0x{:04x}".format(rst))
-        logging.info ("Attempting to seek to reset vector...")
-        r2.cmd("s 0x{:04x}".format(rst))
-        logging.info ("R2 seeked to address {}".format(r2.cmd("s")))
+def func_parse_str(func_str):
+    ret = []
+    fs = func_str.splitlines()
+    for line in fs:
+        try:
+            addr = int(line[:10], 16)
+        except TypeError:
+            continue
+        if addr and addr >= 36864:
+            ret.append(addr)
+    return ret
+    
+# Creates an array of hashed features representing the instruction grams of each block within a function
+def grab_features(func, visited):
 
-        logging.info(r2.cmd('aaa'))    
-        candidates = r2.cmd('/A call') # Search R2 for all "call" instructions
-        logging.info("Result of R2 call search: {}".format(candidates))
-        callers = get_callers(candidates) # grab all "callers" functions from the list of candidates
-        
-        if output:
-            output_graphs(callers, r2)    # output those callers and the callee functions to files
+    func_dict = {}
 
-    else: 
-        print("Error parsing R2")
-    r2.quit()
-    print("Quitting R2...")
-    return callers
+    if func in visited:
+        return func_dict
+
+    func_dict[ur"{}".format(func.base_addr)] = ur"{}".format(get_signature(func.cfg.first, []))
+    visited.append(func)
+
+    #for child in func.children.values():
+    #    func_dict.update(grab_features(child, visited))
+
+    return func_dict
+
+# return a list of hash values for an entire function
+def get_signature(block, visited):
+
+    result = []
+    if block is None or block in visited: # Ignore blocks we've already resited
+        return result
+    
+    result.extend(block.get_seq_inst())
+    #result.extend(block.ret_instruct_list())
+
+    visited.append(block)
+
+    if block.jump is not None:
+        result.extend(get_signature(block.jump, visited))
+
+    if block.fail is not None:
+        result.extend(get_signature(block.fail, visited))
+
+    return result
+
+def get_json(feature_dict):
+          
+    return OrderedDict(json.dumps(feature_dict)) 
 
 # helper function to check if a string is a hex string or not
 def isHex(num): 
@@ -238,55 +427,97 @@ def isHex(num):
     except ValueError:
         return False
 
-# Purge all addresses that aren't within 5 lines of at least 1 other call, and number less than 5 total
-def get_callers(candidates):
+def load_sensors(fn, sensor_list):
 
-    cand_str = candidates.splitlines()
-    cand_list = OrderedDict() # dictionary of address, and the candidate object
+    ra2 = r2pipe.open(fn, ["-2"])
 
-    # place all candidates into the above dictionary
-    for candidate in cand_str:
-        logging.debug("Candidate: {}".format(candidate))
-        candidate = candidate.split()
-        if isHex(candidate[3]): # Don't add any non-hex function calls, for the broken instructions
-            callee_candidate = callee(int(candidate[0], 16), int(candidate[3], 16))
-            cand_list[int(candidate[0], 16)] = callee_candidate
-
-    logging.info("Found {} potential candidates for grouping.".format(len(cand_list)))
-
-    # form groupings based off of "close" call groupings
-    func = 0x0
-    current = 0x0
-    call = None
-    callers = {}
-
-    for address, candidate in cand_list.iteritems(): # iterate over items in-order (by address)
+    if (ra2):
         
-        #logging.info("Candidate func address: {}\nCurrent address: {}".format(address, current))
+        ra2.cmd("e asm.arch=m7700")
+        ra2.cmd("e anal.limits=true")
+        ra2.cmd("e anal.from=0x9000")
+        ra2.cmd("e anal.to=0xffd0")
+        #ra2.cmd("e anal.hasnext=true")
+        ra2.cmd("0x93c1")
+        ra2.cmd("aaa")
+        sensor_obj = {}
 
-        if (func == 0x0):                # no defined caller, make a new one starting at first address
+        for sensor in sensor_list:
+            #print sensor
+            sensor_obj[sensor] = [] # declare a list at each sensor value
 
-            func = int(address or 0)     # current starts at the base address, though functions may start earlier
-            current = func
-            call = caller(func, candidate)
-            call.push(address, candidate)    # push THIS candidate into the caller (first call of mass caller func)
+            for sensor_addr in sensor_list[sensor]: # populate the list with the func disassembly
+                ra2.cmd("s 0x{:04x}".format(int(sensor_addr, 16))) 
+                ra2.cmd("aa")
+                #ra2.cmd("sf.")
+                #addr = ra2.cmd("s")
+                if sensor_addr not in visited.keys():
+                    fcn_obj = function(int(sensor_addr, 16), populate_cfg(int(sensor_addr, 16), ra2.cmd("agj")))
+                    sensor_obj[sensor].append(fcn_obj) # create a function
+                    visited[sensor_addr] = fcn_obj
+                else:
+                    sensor_obj[sensor].append(visited[sensor_addr])
 
-        elif (abs(address - current) <= 0xA): # a candidate is "close" to another if it is within 10 of the next address
-            call.push(address, candidate)    # push a candidate into the caller
-            current = (address or 0)
+        ra2.quit()
+    else:
+        print "Radare couldn't open {}".format(fn)
+    
+    return sensor_obj
 
-        else:
-            if (call.count >= 4):                # if there are less than 5 candiates in the caller, discard
-                callers[func] = call            # save the caller object, otherwise overwrite it   
+def get_sensor_val(val, control, test):
 
-            func = int(address or 0)     # current starts at the base address, though functions may start earlier
-            call = caller(func, candidate)
-            call.push(address, candidate)    # push THIS candidate into the caller (first call of mass caller func)
-            current = func
+    sensor = "0x0000" # default value if not found
+    control_sensor = sensor_values[val]
 
-    logging.info("Found {} groups of candidates.".format(len(callers)))
+    control_features = control.get_ctrl_features(control_sensor)
+    test_features = test.get_features()
+    sensor_feature = {}
 
-    return callers
+    #print ("val {} control {} test {}".format(val, control, test))
+
+    try:
+        sensor_feature = control_features[ur"{}".format(control_sensor)]
+    except KeyError:
+        print "Error in key {}".format(control_sensor)
+        return sensor
+
+    i = 0
+    largest = 0
+    for addr, feature in test_features.iteritems():
+        
+        i = (jaccard(feature.items(), sensor_feature.items()))
+        
+        if i > largest:
+            largest = i
+            sensor = addr 
+                
+        i = 0
+        
+    return sensor
+
+def jaccard(a, b):
+    c = set(a).intersection(set(b))
+    return float(len(c)) / (len(a) + len(b) - len(c))
+
+# Uses a given sensor function address and its matching candidate address
+# to try and find the value of the sensor in the analyzed candidate
+def find_sensors(control_func_addr, test_func_addr):
+    func_sensors = {}
+
+    for val in control_func_addr:
+        print val
+        z = itertools.izip(control_func_addr[val], test_func_addr[val])
+
+        for control, test in z:
+
+            if func_sensors.has_key(val):
+                func_sensors[val].append(get_sensor_val(val, control, test))
+            else:
+                func_sensors[val] = [get_sensor_val(val, control, test)]
+
+        print func_sensors[val]
+
+    return func_sensors
 
 def main ():
     # set up the parser first
@@ -294,53 +525,44 @@ def main ():
     # can also output JSON file as a .DOT file, or pull in a ROM and call R2 
     parser = argparse.ArgumentParser(description='Import and process M7700 JSON Graph files.')
 
-    parser.add_argument('filename', metavar='filename', nargs='+', type=str, default=sys.stdin, 
+    parser.add_argument('filename', metavar='filename', nargs='?', default='/home/greg/Documents/git/PySensorParser/94_test.json', type=str, 
                    help='M7700 ROM file for parsing')
 
-    parser.add_argument('-o', '--output', action='store_true',
-                   help='Output M7700 rom to file')
+    # parser.add_argument('-o', '--output', action='store_true',
+    #                help='Output M7700 rom to file')
 
     logging.basicConfig(filename='log_filename.txt', level=logging.DEBUG)
 
     args = parser.parse_args()
+    control_file = "/home/greg/Documents/ROMs/EG33/USDM/722527-1993-USDM-SVX-EG33.bin"
+    jsons = {}
 
-    for infile in args.filename:
-        if infile is not None:
-            print("Opening file: {}".format(infile))
-        #infile = value
+    control_cfg = load_sensors(control_file, sensors)
 
-        # do ROM-level analysis with R2pipe
-        if (os.path.isfile(infile)):
-            if args.output: # only output if specified
-                regex = re.search(r'[A-Z]{2}\d\d', infile) # pull the ECU model from the filename
-                backup_string = infile.split('-')
-                try: 
-                    dir_title =  regex.group(0)
-                except AttributeError:
-                    dir_title = "{}".format(backup_string[3])
-                working_dir = '{}'.format(dir_title)
-                if not os.path.exists(working_dir):
-                    os.makedirs(working_dir)
-                if not os.curdir == working_dir:
-                    os.chdir(working_dir)
-            
-                regex = re.search(r'\d\w+-\d\w+-\w{1,4}', infile) # get the ROM from the filename
-                try: 
-                    dir_title =  regex.group(0)
-                except AttributeError:                
-                    dir_title = "{}-{}-{}".format(backup_string[0], backup_string[1], backup_string[2])
+    json_file = open(args.filename, 'r')
 
-                working_dir = '{}'.format(dir_title)
+    # compare each infile to the control file
+    if json_file is not None:
+        
+        print("Opening file: {}".format(json_file))
+        # analyze the ROM's functions
+        json_string = u"{}".format(json_file.read())
+        func_list = json.loads(json_string)
+        jsons = {}
+        
+        for fn in func_list:
+            # need a more elegant way to path to the files than this
+            sensor_list = load_sensors("/home/greg/Documents/ROMs/EG33/USDM/{}".format(fn), func_list[fn])
 
-                if not os.path.exists(working_dir):
-                    os.makedirs(working_dir)
-                if not os.curdir == working_dir:
-                    os.chdir(working_dir)
-            
-            callers = parse_rom(infile, args.output)
-            print ("Number of callers: {}".format(len(callers)))
-        else: 
-            print ("File '{}' not found".format(infile))
+            # output format - each filename will have a list like the control list above
+            jsons[fn] = find_sensors(control_cfg, sensor_list)
+
+        # attempt to find matching function for each value in the control_cfg
+
+        with open('file.json', 'w') as out:
+            json.dump(jsons, out, indent=4, sort_keys=True)
+            out.close()
 
 # start
-main()
+if __name__ == '__main__':
+    main()

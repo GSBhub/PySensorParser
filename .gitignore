@@ -239,3 +239,5 @@ bins/rst_c193.png
 EG33/722527-1993-USDM/9a10-23/0x9a1c/0x9a1c.png
 EG33/722527-1993-USDM/9a10-23/0x9a1f/0x9a1f.png
 out.png
+*.png
+bins/include/*

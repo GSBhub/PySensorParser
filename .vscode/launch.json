@@ -3,13 +3,13 @@
     // Hover to view descriptions of existing attributes.
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
-    "configurations": [
+    "configurations": [ //./bins/722527-1993-USDM-SVX-EG33.bin "./bins/722515-1992-JDM-SVX-EG33.bin"
         {
             "name": "Python: Current File",
             "type": "python",
             "request": "launch",
             "program": "${file}",
-            "args": ["/home/greg/Documents/Graphs/Files/EG33/742521-1994-USDM-SVX-EG33.bin"]
+            "args": ["94_test.json"]
         },
         {
             "name": "Python: Attach",
