@@ -9,7 +9,7 @@
             "type": "python",
             "request": "launch",
             "program": "${file}",
-            "args": ["94_test.json"]
+            "args": ["fcg_maxes.json"]
         },
         {
             "name": "Python: Attach",
