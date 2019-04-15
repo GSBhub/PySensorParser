@@ -20,7 +20,7 @@ import md5
 import pprint
 import collections
 import itertools
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from networkx.drawing import nx_agraph
 from subprocess import check_call
 from datetime import datetime
@@ -664,7 +664,7 @@ def find_sensors(control_func_addr, test_func_addr, args):
         #z = itertools.izip(control_func_addr[val].values(), test_func_addr[val].values())
         z = OrderedDict(zip(control_func_addr[val], test_func_addr[val]))
 
-        for  control,  test in z.iteritems():
+        for  control, test in z.iteritems():
 
             control_features = control.get_features()
 
@@ -737,6 +737,18 @@ def main ():
                         jsons[fn] = find_sensors(control_cfg, sensor_list, args)
 
                 # attempt to find matching function for each value in the control_cfg
+
+                        for sensor, candidate_listings in jsons[fn].iteritems():
+                            num_listings = dict(Counter(candidate_listings))
+                            jsons[fn][sensor] = OrderedDict()
+
+                            for sensor_val, num in num_listings.iteritems():
+                                match_chance = float(float(num) / float(len(candidate_listings)))
+                                if match_chance not in jsons[fn][sensor]:
+                                    jsons[fn][sensor][match_chance] = [sensor_val]
+                                else:
+                                    jsons[fn][sensor][match_chance].append(sensor_val)
+                            
 
                 with open('{}.json'.format(engine), 'w') as out:
                    
