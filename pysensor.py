@@ -550,14 +550,15 @@ def load_sensors(fn, sensor_list):
                 #ra2.cmd("aa")
                 #ra2.cmd("a2f")
                 addr = ra2.cmd("s").strip()
-                if addr not in visited.keys():
-                    fcn_obj = function(addr, populate_cfg(addr, ra2.cmd("agj")))
-                    sensor_obj[sensor].append(fcn_obj)
-                    #sensor_obj[sensor][addr] = (fcn_obj) # create a function
-                #    visited[addr] = fcn_obj
-                else:
-                    sensor_obj[sensor].append(fcn_obj)
-                    #sensor_obj[sensor][addr] = (visited[addr])
+                if "0x0" not in addr:
+                    if addr not in visited.keys():
+                        fcn_obj = function(addr, populate_cfg(addr, ra2.cmd("agj")))
+                        sensor_obj[sensor].append(fcn_obj)
+                        #sensor_obj[sensor][addr] = (fcn_obj) # create a function
+                    #    visited[addr] = fcn_obj
+                    else:
+                        sensor_obj[sensor].append(fcn_obj)
+                        #sensor_obj[sensor][addr] = (visited[addr])
 
         ra2.quit()
     else:
@@ -681,9 +682,11 @@ def main ():
     # set up the parser first
     # default parser args - filename, opens file for JSON parsing 
     # can also output JSON file as a .DOT file, or pull in a ROM and call R2 
+    file_dir = os.path.dirname(os.path.realpath(__file__))
+
     parser = argparse.ArgumentParser(description='Import and process M7700 JSON Graph files.')
 
-    parser.add_argument('filename', metavar='filename', nargs='?', default='/home/greg/Documents/git/PySensorParser/94_test.json', type=str, 
+    parser.add_argument('filename', metavar='filename', nargs='?', default='{}/fcg_maxes.json'.format(file_dir), type=str, 
                    help='M7700 ROM file for parsing')
 
     parser.add_argument('-s', '--settings', metavar='settings', default="parser_settings.json", type=str,
@@ -721,11 +724,13 @@ def main ():
         sensor_values = control_params['sensors']
         global sensors
         sensors = control_params['sensor_functions']
-        if "EG33" in control_file:
-            control_cfg = load_sensors("{}/bins/{}".format(os.getcwd(), control_file), control_params['sensor_functions'])
+        #if "EG33" in control_file:
+        engine = control_params['engine']
+
+        control_cfg = load_sensors("{}/bins/{}".format(os.getcwd(), control_file), control_params['sensor_functions'])
         # Lookup params from control file
-        for engine, files in json_val.iteritems(): # for file in the func list
-            if "EG33" in engine and "EG33" in control_file:
+        for test_bin, files in json_val.iteritems(): # for file in the func list
+            if engine in test_bin:
                 print "Getting sensor features for Engine {}".format(engine)
                 for fn, func_list in files.iteritems():
                     if fn not in u'Control':
@@ -750,10 +755,9 @@ def main ():
                                     jsons[fn][sensor][match_chance].append(sensor_val)
                             
 
-                with open('{}.json'.format(engine), 'w') as out:
-                   
-                    json.dump(jsons, out, indent=4, sort_keys=True)
-                    out.close()
+            with open('{}.json'.format(engine), 'w') as out:
+                json.dump(jsons, out, indent=4, sort_keys=True)
+                out.close()
 
 # start
 if __name__ == '__main__':
