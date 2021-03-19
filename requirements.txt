@@ -32,7 +32,7 @@ ipaddress==1.0.17
 isodate==0.6.0
 isort==4.3.4
 itsdangerous==0.24
-Jinja2==2.9.6
+Jinja2==2.11.3
 jsongraph==0.2.2
 jsonmapping==0.7.4
 jsonschema==2.6.0
