@@ -82,7 +82,7 @@ Twisted==16.6.0
 typecast==0.3.3
 Unidecode==1.0.22
 url==0.4.2
-urllib3==1.23
+urllib3==1.26.5
 webencodings==0.5
 Werkzeug==0.12.2
 wicd==1.7.4
