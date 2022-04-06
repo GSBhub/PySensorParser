@@ -78,7 +78,7 @@ six==1.11.0
 sparqlquery==0.2.2
 sqlparse==0.2.2
 tqdm==4.14.0
-Twisted==16.6.0
+Twisted==22.2.0
 typecast==0.3.3
 Unidecode==1.0.22
 url==0.4.2
