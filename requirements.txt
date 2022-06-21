@@ -43,7 +43,7 @@ mccabe==0.6.1
 mqlparser==0.1
 networkx==2.1
 normality==0.6.1
-numpy==1.12.1
+numpy==1.22.0
 PAM==0.4.2
 pexpect==4.2.1
 ply==3.9
