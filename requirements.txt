@@ -37,7 +37,7 @@ jsongraph==0.2.2
 jsonmapping==0.7.4
 jsonschema==2.6.0
 lazy-object-proxy==1.3.1
-lxml==3.7.1
+lxml==4.9.1
 MarkupSafe==1.0
 mccabe==0.6.1
 mqlparser==0.1
