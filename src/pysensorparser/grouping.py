@@ -1,5 +1,5 @@
 """
-Pure-Python grouping logic: parse the raw `/A call` output from radare2
+Pure-Python grouping logic: parse the raw ``/at call`` output from radare2
 and cluster JSR sites into caller groups.
 
 No r2pipe dependency — fully unit-testable.
@@ -30,27 +30,52 @@ def is_hex(s: str) -> bool:
         return False
 
 
+def _normalize_addr(s: str) -> str | None:
+    """
+    Return *s* as a canonical '0x…' hex string, or None if unparseable.
+
+    Handles both '0xNNNN' (r2 JSR output) and '$NNNNNN' (r2 JSL output).
+    """
+    if s.startswith("$"):
+        s = "0x" + s[1:]
+    if is_hex(s):
+        return s
+    return None
+
+
 def parse_candidates(candidates_str: str) -> OrderedDict[int, Callee]:
     """
-    Parse the whitespace-delimited output of radare2's ``/A call`` command
-    into an address-ordered dict of Callee objects.
+    Parse whitespace-delimited ``/at call`` (r2 6.x) or legacy ``/A call``
+    output into an address-ordered dict of Callee objects.
 
-    Expected line format (at least 4 whitespace-separated tokens):
-        <source_addr>  <bytes/info>  <mnemonic>  <dest_addr>
+    r2 6.x format (5+ tokens):
+        <src_addr>  call  <size>  <MNEMONIC>  <dest_addr>  [extra…]
+    Legacy format (4 tokens):
+        <src_addr>  <bytes>  <mnemonic>  <dest_addr>
 
-    Lines that don't have 4 tokens or whose 4th token isn't hex are skipped.
+    Lines that cannot yield valid hex source and destination addresses are
+    skipped silently.
     """
     result: OrderedDict[int, Callee] = OrderedDict()
     for line in candidates_str.splitlines():
         tokens = line.split()
         if len(tokens) < 4:
             continue
-        if not is_hex(tokens[3]):
-            log.debug("Skipping line (field 3 not hex): %r", line)
+
+        src_str = tokens[0]
+        # Detect format: new format has a non-hex token at index 3 (the mnemonic)
+        # and the destination at index 4; legacy format has dest at index 3.
+        if len(tokens) >= 5 and not is_hex(tokens[3]):
+            dest_str = _normalize_addr(tokens[4])
+        else:
+            dest_str = _normalize_addr(tokens[3])
+
+        if dest_str is None:
+            log.debug("Skipping line (dest not hex): %r", line)
             continue
         try:
-            src = int(tokens[0], 16)
-            dst = int(tokens[3], 16)
+            src = int(src_str, 16)
+            dst = int(dest_str, 16)
         except ValueError:
             log.debug("Could not parse addresses on line: %r", line)
             continue

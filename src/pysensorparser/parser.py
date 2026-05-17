@@ -41,9 +41,9 @@ def parse_rom(infile: str) -> dict[int, Caller]:
     r2.cmd(f"s 0x{rst:04x}")
     log.info("R2 seeked to: %s", r2.cmd("s"))
 
-    r2.cmd("aaa")
-    candidates = r2.cmd("/A call")
-    log.debug("'/A call' output:\n%s", candidates)
+    # /at call does a linear scan — no aaa needed (and aaa crashes on raw M7700 binaries)
+    candidates = r2.cmd("/at call")
+    log.debug("'/at call' output:\n%s", candidates)
 
     callers = get_callers(candidates)
     print(f"Found {len(callers)} caller group(s).")
